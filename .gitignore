@@ -1,0 +1,41 @@
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+main
+
+# Output folder
+/bin/
+/build/
+
+# Go workspace
+pkg/
+*.out
+
+# Dependency directories (jika ada)
+vendor/
+
+# Environment & Secrets
+.env
+*.env
+.env.*
+
+# IDE / Editor
+# VSCode
+.vscode/
+*.code-workspace
+
+# JetBrains
+.idea/
+
+# OS generated
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.log
+*.tmp
+*.cache
