@@ -34,6 +34,7 @@ REST API untuk mengelola WhatsApp Web Multi-Device menggunakan Go, Echo Framewor
 - **Middleware:** CORS, Logger, Recover
 
 ## 📂 Project Structure
+
 gowa-yourself/
 ├── config/
 │ └── config.go
