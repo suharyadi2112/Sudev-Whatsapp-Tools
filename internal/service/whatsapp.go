@@ -2,13 +2,12 @@ package service
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"fmt"
-	"strings"
 	"sync"
+	"time"
 
 	"gowa-yourself/database"
+	"gowa-yourself/internal/helper"
 	"gowa-yourself/internal/model"
 
 	"go.mau.fi/whatsmeow"
@@ -28,20 +27,19 @@ var (
 func eventHandler(instanceID string) func(evt interface{}) {
 	return func(evt interface{}) {
 		switch evt.(type) {
+
 		case *events.Connected:
-			// Cek apakah sedang proses logout
 			loggingOutLock.RLock()
 			isLoggingOut := loggingOut[instanceID]
 			loggingOutLock.RUnlock()
-
 			if isLoggingOut {
 				fmt.Println("⚠ Ignoring reconnect during logout:", instanceID)
 				return
 			}
 
-			// Update session status ketika connected
 			sessionsLock.Lock()
-			if session, exists := sessions[instanceID]; exists {
+			session, exists := sessions[instanceID]
+			if exists {
 				session.IsConnected = true
 				if session.Client.Store.ID != nil {
 					session.JID = session.Client.Store.ID.String()
@@ -50,11 +48,26 @@ func eventHandler(instanceID string) func(evt interface{}) {
 			}
 			sessionsLock.Unlock()
 
+			if exists && session.Client.Store.ID != nil {
+				// Ambil phoneNumber dari JID (mis. "6285148107612:38@s.whatsapp.net")
+				jid := session.Client.Store.ID
+				phoneNumber := jid.User // biasanya sudah format 6285xxxx
+
+				platform := "" // kalau ada field ini; kalau tidak bisa kosong
+				if err := model.UpdateInstanceOnConnected(
+					instanceID,
+					jid.String(),
+					phoneNumber,
+					platform,
+				); err != nil {
+					fmt.Println("Warning: failed to update instance on connected:", err)
+				}
+			}
+
 		case *events.PairSuccess:
 			fmt.Println("✓ Pair Success! Instance:", instanceID)
 
 		case *events.LoggedOut:
-			// Handle logout
 			sessionsLock.Lock()
 			if session, exists := sessions[instanceID]; exists {
 				session.IsConnected = false
@@ -62,24 +75,29 @@ func eventHandler(instanceID string) func(evt interface{}) {
 			}
 			sessionsLock.Unlock()
 
+			if err := model.UpdateInstanceOnLoggedOut(instanceID); err != nil {
+				fmt.Println("Warning: failed to update instance on logged out:", err)
+			}
+
 		case *events.StreamReplaced:
 			fmt.Println("⚠ Stream replaced! Instance:", instanceID)
 
 		case *events.Disconnected:
-			// Cek apakah sedang logout
 			loggingOutLock.RLock()
 			isLoggingOut := loggingOut[instanceID]
 			loggingOutLock.RUnlock()
-
 			if !isLoggingOut {
 				fmt.Println("⚠ Disconnected! Instance:", instanceID)
 
-				// Mark session as disconnected
 				sessionsLock.Lock()
 				if session, exists := sessions[instanceID]; exists {
 					session.IsConnected = false
 				}
 				sessionsLock.Unlock()
+
+				if err := model.UpdateInstanceOnDisconnected(instanceID); err != nil {
+					fmt.Println("Warning: failed to update instance on disconnected:", err)
+				}
 			}
 		}
 	}
@@ -100,17 +118,30 @@ func LoadAllDevices() error {
 		}
 
 		jid := device.ID.String()
-		instanceID := generateInstanceIDFromJID(jid)
 
+		// 1) Ambil instanceID dari DB custom, JANGAN generate baru dari JID
+		inst, err := model.GetInstanceByJID(jid)
+		if err != nil {
+			fmt.Printf("Failed to get instance for jid %s: %v\n", jid, err)
+			continue
+		}
+
+		instanceID := inst.InstanceID
+		if instanceID == "" {
+			fmt.Printf("Empty instanceID for jid %s, skipping\n", jid)
+			continue
+		}
+
+		// 2) Buat client WhatsMeow dan attach event handler dengan instanceID yang benar
 		client := whatsmeow.NewClient(device, nil)
 		client.AddEventHandler(eventHandler(instanceID))
 
-		err := client.Connect()
-		if err != nil {
+		if err := client.Connect(); err != nil {
 			fmt.Printf("Failed to connect device %s: %v\n", jid, err)
 			continue
 		}
 
+		// 3) Simpan ke sessions map dengan key instanceID yang konsisten
 		sessionsLock.Lock()
 		sessions[instanceID] = &model.Session{
 			ID:          instanceID,
@@ -120,29 +151,25 @@ func LoadAllDevices() error {
 		}
 		sessionsLock.Unlock()
 
+		// 4) Update status di DB bahwa instance ini berhasil re-connect
+		//    (kalau client.IsConnected() == true)
+		if client.IsConnected() {
+			phoneNumber := helper.ExtractPhoneFromJID(jid) // mis. "6285148107612"
+
+			if err := model.UpdateInstanceOnConnected(
+				instanceID,
+				jid,
+				phoneNumber,
+				"", // platform sementara kosong
+			); err != nil {
+				fmt.Printf("Warning: failed to update instance on reconnect %s: %v\n", instanceID, err)
+			}
+		}
+
 		fmt.Printf("✓ Loaded and connected: %s (instance: %s)\n", jid, instanceID)
 	}
 
 	return nil
-}
-
-// Helper function untuk generate instance ID dari JID
-func generateInstanceIDFromJID(jid string) string {
-	// Ambil phone number dari JID (sebelum ':')
-	// Contoh: 6285148104468:6@s.whatsapp.net -> 6285148104468_6
-	parts := strings.Split(jid, "@")
-	if len(parts) > 0 {
-		phoneAndDevice := strings.ReplaceAll(parts[0], ":", "_")
-		return "instance_" + phoneAndDevice
-	}
-	return jid
-}
-
-// Generate random instance ID untuk login baru
-func generateInstanceID() string {
-	b := make([]byte, 16)
-	rand.Read(b)
-	return hex.EncodeToString(b)
 }
 
 func CreateSession(instanceID string) (*model.Session, error) {
@@ -219,11 +246,11 @@ func DeleteSession(instanceID string) error {
 		return fmt.Errorf("session not found")
 	}
 
-	// Hapus dari map SEBELUM logout
+	// Hapus dari map sessions (memory)
 	delete(sessions, instanceID)
 	sessionsLock.Unlock()
 
-	// PERMANENT LOGOUT: Unlink device + delete from database
+	// LOGOUT: Unlink device dari WhatsApp
 	if session.Client != nil {
 		err := session.Client.Logout(context.Background())
 		if err != nil {
@@ -232,11 +259,17 @@ func DeleteSession(instanceID string) error {
 		session.Client.Disconnect()
 	}
 
+	// Update status instance di DB custom (tidak dihapus, hanya update status)
+	err := model.UpdateInstanceStatus(instanceID, "logged_out", false, time.Now())
+	if err != nil {
+		fmt.Printf("Warning: Failed to update instance status in DB: %v\n", err)
+	}
+
 	// Clean up flag
 	loggingOutLock.Lock()
 	delete(loggingOut, instanceID)
 	loggingOutLock.Unlock()
 
-	fmt.Println("✓ Device unlinked and deleted from database:", instanceID)
+	fmt.Println("✓ Device logged out, session cleared. Instance kept in DB:", instanceID)
 	return nil
 }

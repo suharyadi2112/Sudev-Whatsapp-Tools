@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"log"
+	"net/http"
 	"time"
 
 	"gowa-yourself/internal/model"
@@ -66,9 +68,24 @@ func Login(c echo.Context) error {
 func GetQR(c echo.Context) error {
 	instanceID := c.Param("instanceId")
 
+	//Ambil info instance dari DB
+	inst, err := model.GetInstanceByInstanceID(instanceID)
+	if err != nil {
+		return ErrorResponse(c, 404, "Instance not found", "INSTANCE_NOT_FOUND", err.Error())
+	}
+	//Kalau sudah logged_out, jangan izinkan QR lagi untuk instance ini
+	if inst.Status == "logged_out" {
+		return ErrorResponse(c, 400,
+			"This instance is logged out and cannot be reused. Please create a new instance for this number.",
+			"INSTANCE_LOGGED_OUT",
+			"",
+		)
+	}
+
 	session, err := service.GetSession(instanceID)
 	if err != nil {
-		return ErrorResponse(c, 404, "Session not found", "SESSION_NOT_FOUND", "")
+		// Session tidak ada, berikan instruksi buat session baru dulu
+		return ErrorResponse(c, 404, "Session not found. Please create a new instance first.", "SESSION_NOT_FOUND", "")
 	}
 
 	if session.IsConnected {
@@ -97,6 +114,13 @@ func GetQR(c echo.Context) error {
 			println("\n=== QR Code String ===")
 			println(evt.Code)
 			println("\nGenerate QR at: https://www.qr-code-generator.com/")
+
+			// Simpan QR ke DB custom (misal update field qr_code, qr_expires_at, status)
+			expiresAt := time.Now().Add(60 * time.Second)
+			err := model.UpdateInstanceQR(instanceID, evt.Code, expiresAt)
+			if err != nil {
+				log.Printf("Failed to update QR info in database for instance %s: %v", instanceID, err)
+			}
 
 			return SuccessResponse(c, 200, "QR code generated", map[string]interface{}{
 				"qr":      evt.Code,
@@ -132,30 +156,58 @@ func GetStatus(c echo.Context) error {
 	})
 }
 
-// GET /instances atau GET /instances?all=true
+// GET /instances?all=true
 func GetAllInstances(c echo.Context) error {
-	sessions := service.GetAllSessions()
 	showAll := c.QueryParam("all") == "true"
 
-	instances := make([]map[string]interface{}, 0)
+	// Ambil semua instance dari table custom
+	dbInstances, err := model.GetAllInstances()
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]interface{}{
+			"success": false,
+			"message": "Failed to get instances from DB",
+			"error":   err.Error(),
+		})
+	}
 
-	for id, session := range sessions {
-		// Skip jika tidak connected dan tidak request all
-		if !showAll && !session.IsConnected {
+	// Ambil semua session memory (active sessions)
+	sessions := service.GetAllSessions()
+
+	var instances []model.InstanceResp
+
+	for _, inst := range dbInstances {
+		// Convert dari model.Instance ke model.InstanceResp (string primitif)
+		resp := model.ToResponse(inst)
+
+		// Cek apakah ada session aktif untuk instance ini
+		session, found := sessions[inst.InstanceID]
+
+		if found {
+			resp.IsConnected = session.IsConnected
+			resp.JID = session.JID
+
+			if resp.IsConnected {
+				resp.Status = "online"
+			}
+		}
+		// Tambahkan info apakah session ada di Whatsmeow memory
+		resp.ExistsInWhatsmeow = found
+
+		// Kalau tidak show all, dan instance offline, skip
+		if !showAll && !resp.IsConnected {
 			continue
 		}
 
-		instance := map[string]interface{}{
-			"instanceId":  id,
-			"isConnected": session.IsConnected,
-			"jid":         session.JID,
-		}
-		instances = append(instances, instance)
+		instances = append(instances, resp)
 	}
 
-	return SuccessResponse(c, 200, "Instances retrieved", map[string]interface{}{
-		"total":     len(instances),
-		"instances": instances,
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success": true,
+		"message": "Instances retrieved",
+		"data": map[string]interface{}{
+			"total":     len(instances),
+			"instances": instances,
+		},
 	})
 }
 

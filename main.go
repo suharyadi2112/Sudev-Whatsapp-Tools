@@ -58,13 +58,17 @@ func main() {
 	// ambil semua instance
 	e.GET("/instances", handler.GetAllInstances)
 
-	// Message routes
+	// Message routes by instance id
 	e.POST("/send/:instanceId", handler.SendMessage)
 	e.POST("/check/:instanceId", handler.CheckNumber)
-
-	// Media routes
+	// Media routes by instance id
 	e.POST("/send/:instanceId/media", handler.SendMediaFile)
 	e.POST("/send/:instanceId/media-url", handler.SendMediaURL)
+
+	//Message by nohp
+	e.POST("/by-number/:phoneNumber", handler.SendMessageByNumber)
+	e.POST("/by-number/:phoneNumber/media-url", handler.SendMediaURLByNumber)
+	e.POST("/by-number/:phoneNumber/media-file", handler.SendMediaFileByNumber)
 
 	// Group routes
 	e.GET("/groups/:instanceId", handler.GetGroups)

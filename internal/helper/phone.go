@@ -2,6 +2,7 @@ package helper
 
 import (
 	"fmt"
+	"strings"
 
 	"go.mau.fi/whatsmeow/types"
 )
@@ -34,4 +35,15 @@ func FormatPhoneNumber(phone string) (types.JID, error) {
 	}
 
 	return jid, nil
+}
+
+func ExtractPhoneFromJID(jid string) string {
+	// "6285148107612:43@s.whatsapp.net" -> "6285148107612"
+	atSplit := strings.SplitN(jid, "@", 2)
+	if len(atSplit) == 0 {
+		return jid
+	}
+	beforeAt := atSplit[0]
+	colonSplit := strings.SplitN(beforeAt, ":", 2)
+	return colonSplit[0]
 }
