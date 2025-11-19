@@ -107,14 +107,17 @@ func eventHandler(instanceID string) func(evt interface{}) {
 				if Realtime != nil {
 					now := time.Now().UTC()
 
+					inst, err := model.GetInstanceByInstanceID(instanceID)
+					if err != nil {
+						fmt.Printf("Failed to get instance by instance ID %s: %v\n", instanceID, err)
+					}
+
 					data := ws.InstanceStatusChangedData{
-						InstanceID: instanceID,
-						// Kalau kamu simpan phoneNumber di session atau bisa ambil cepat dari DB,
-						// isi di sini. Untuk sementara boleh dikosongkan.
-						PhoneNumber:    "",
+						InstanceID:     instanceID,
+						PhoneNumber:    inst.PhoneNumber.String,
 						Status:         "logged_out",
 						IsConnected:    false,
-						ConnectedAt:    nil, // atau isi dari DB kalau mau lebih akurat
+						ConnectedAt:    &inst.ConnectedAt.Time,
 						DisconnectedAt: &now,
 					}
 
@@ -312,6 +315,32 @@ func DeleteSession(instanceID string) error {
 	err := model.UpdateInstanceStatus(instanceID, "logged_out", false, time.Now())
 	if err != nil {
 		fmt.Printf("Warning: Failed to update instance status in DB: %v\n", err)
+	} else {
+		if Realtime != nil {
+			now := time.Now().UTC()
+
+			inst, err := model.GetInstanceByInstanceID(instanceID)
+			if err != nil {
+				fmt.Printf("Failed to get instance by instance ID %s: %v\n", instanceID, err)
+			}
+
+			data := ws.InstanceStatusChangedData{
+				InstanceID:     instanceID,
+				PhoneNumber:    inst.PhoneNumber.String,
+				Status:         "logged_out",
+				IsConnected:    false,
+				ConnectedAt:    &inst.ConnectedAt.Time,
+				DisconnectedAt: &now,
+			}
+
+			evt := ws.WsEvent{
+				Event:     ws.EventInstanceStatusChanged,
+				Timestamp: now,
+				Data:      data,
+			}
+
+			Realtime.Publish(evt)
+		}
 	}
 
 	// Clean up flag

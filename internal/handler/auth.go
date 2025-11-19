@@ -10,6 +10,7 @@ import (
 
 	"gowa-yourself/internal/model"
 	"gowa-yourself/internal/service"
+	"gowa-yourself/internal/ws"
 
 	"github.com/labstack/echo/v4"
 )
@@ -120,6 +121,23 @@ func GetQR(c echo.Context) error {
 			err := model.UpdateInstanceQR(instanceID, evt.Code, expiresAt)
 			if err != nil {
 				log.Printf("Failed to update QR info in database for instance %s: %v", instanceID, err)
+			} else if service.Realtime != nil {
+
+				now := time.Now().UTC()
+				data := ws.QRGeneratedData{
+					InstanceID:  instanceID,
+					PhoneNumber: "", // kalau ada di struct inst
+					QRData:      evt.Code,
+					ExpiresAt:   expiresAt,
+				}
+
+				evtWs := ws.WsEvent{
+					Event:     ws.EventQRGenerated,
+					Timestamp: now,
+					Data:      data,
+				}
+
+				service.Realtime.Publish(evtWs)
 			}
 
 			return SuccessResponse(c, 200, "QR code generated", map[string]interface{}{
@@ -137,6 +155,20 @@ func GetQR(c echo.Context) error {
 		}
 	}
 
+	// Kalau keluar dari loop, QR dianggap expired
+	if service.Realtime != nil {
+		now := time.Now().UTC()
+		data := ws.QRExpiredData{
+			InstanceID:  instanceID,
+			PhoneNumber: "", // kalau ada
+		}
+		evtWs := ws.WsEvent{
+			Event:     ws.EventQRExpired,
+			Timestamp: now,
+			Data:      data,
+		}
+		service.Realtime.Publish(evtWs)
+	}
 	return ErrorResponse(c, 400, "QR code expired", "QR_EXPIRED", "Please try again")
 }
 

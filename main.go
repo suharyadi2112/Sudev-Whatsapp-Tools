@@ -6,6 +6,7 @@ import (
 
 	"gowa-yourself/database"
 	"gowa-yourself/internal/handler"
+	"gowa-yourself/internal/helper"
 	"gowa-yourself/internal/service"
 
 	"github.com/labstack/echo/v4"
@@ -29,6 +30,14 @@ func main() {
 		appDbURL = "postgres://postgres:12345678@localhost:5432/custom-sudevwa?sslmode=disable"
 	}
 	database.InitAppDB(appDbURL)
+
+	runCreateSchema := false
+	if len(os.Args) > 1 && os.Args[1] == "--createschema" {
+		runCreateSchema = true
+	}
+	if runCreateSchema { // buat/ensure schema dulu
+		helper.InitCustomSchema()
+	}
 
 	// Load all existing devices from database
 	log.Println("Loading existing devices...")
