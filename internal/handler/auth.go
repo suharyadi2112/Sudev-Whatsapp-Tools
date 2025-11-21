@@ -7,6 +7,8 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
+	"sync"
 	"time"
 
 	"gowa-yourself/internal/model"
@@ -15,6 +17,10 @@ import (
 
 	"github.com/labstack/echo/v4"
 )
+
+// Simpan cancel functions untuk setiap instance
+var qrCancelFuncs = make(map[string]context.CancelFunc)
+var qrCancelMutex sync.RWMutex
 
 // Generate random instance ID
 func generateInstanceID() string {
@@ -68,14 +74,25 @@ func Login(c echo.Context) error {
 
 // GET /qr/:instanceId
 func GetQR(c echo.Context) error {
+
 	instanceID := c.Param("instanceId")
 
-	//Ambil info instance dari DB
+	// Cek apakah sudah ada QR generation yang sedang berjalan
+	qrCancelMutex.RLock()
+	_, exists := qrCancelFuncs[instanceID]
+	qrCancelMutex.RUnlock()
+
+	if exists {
+		return ErrorResponse(c, 409, "QR generation already in progress, please wait", "QR_IN_PROGRESS", "Please wait or cancel the current QR generation first.")
+	}
+
+	// Ambil info instance dari DB
 	inst, err := model.GetInstanceByInstanceID(instanceID)
 	if err != nil {
 		return ErrorResponse(c, 404, "Instance not found", "INSTANCE_NOT_FOUND", err.Error())
 	}
-	//Kalau sudah logged_out, jangan izinkan QR lagi untuk instance ini
+
+	// Kalau sudah logged_out, jangan izinkan QR lagi untuk instance ini
 	if inst.Status == "logged_out" {
 		return ErrorResponse(c, 400,
 			"This instance is logged out and cannot be reused. Please create a new instance for this number.",
@@ -86,7 +103,6 @@ func GetQR(c echo.Context) error {
 
 	session, err := service.GetSession(instanceID)
 	if err != nil {
-		// Session tidak ada, berikan instruksi buat session baru dulu
 		return ErrorResponse(c, 404, "Session not found. Please create a new instance first.", "SESSION_NOT_FOUND", "")
 	}
 
@@ -97,80 +113,231 @@ func GetQR(c echo.Context) error {
 		})
 	}
 
-	// Get QR channel
-	qrChan, err := session.Client.GetQRChannel(context.Background())
-	if err != nil {
-		return ErrorResponse(c, 500, "Failed to get QR channel", "QR_CHANNEL_FAILED", err.Error())
-	}
+	// Buat context dengan timeout 3 menit
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 
-	// Connect client
-	err = session.Client.Connect()
-	if err != nil {
-		return ErrorResponse(c, 500, "Failed to connect", "CONNECT_FAILED", err.Error())
-	}
+	// Simpan cancel function
+	qrCancelMutex.Lock()
+	qrCancelFuncs[instanceID] = cancel
+	qrCancelMutex.Unlock()
 
-	// Listen to QR events
-	for evt := range qrChan {
-		if evt.Event == "code" {
-			// Print QR string untuk debugging
-			println("\n=== QR Code String ===")
-			println(evt.Code)
-			println("\nGenerate QR at: https://www.qr-code-generator.com/")
+	// Jalankan QR generation di goroutine (background process)
+	go func() {
+		// Cleanup setelah selesai
+		defer func() {
+			qrCancelMutex.Lock()
+			delete(qrCancelFuncs, instanceID)
+			qrCancelMutex.Unlock()
+			cancel()
+		}()
 
-			// Simpan QR ke DB custom (misal update field qr_code, qr_expires_at, status)
-			expiresAt := time.Now().Add(60 * time.Second)
-			err := model.UpdateInstanceQR(instanceID, evt.Code, expiresAt)
-			if err != nil {
-				log.Printf("Failed to update QR info in database for instance %s: %v", instanceID, err)
-			} else if service.Realtime != nil {
+		// Get QR channel dengan context
+		qrChan, err := session.Client.GetQRChannel(ctx)
+		if err != nil {
+			log.Printf("Failed to get QR channel for instance %s: %v", instanceID, err)
 
-				now := time.Now().UTC()
-				data := ws.QRGeneratedData{
-					InstanceID:  instanceID,
-					PhoneNumber: "", // kalau ada di struct inst
-					QRData:      evt.Code,
-					ExpiresAt:   expiresAt,
+			// Broadcast error via WebSocket
+			if service.Realtime != nil {
+				errorEvt := ws.WsEvent{
+					Event:     ws.EventInstanceError,
+					Timestamp: time.Now().UTC(),
+					Data: map[string]interface{}{
+						"instance_id": instanceID,
+						"error":       "Failed to get QR channel: " + err.Error(),
+					},
 				}
+				service.Realtime.Publish(errorEvt)
+			}
+			return
+		}
 
-				evtWs := ws.WsEvent{
-					Event:     ws.EventQRGenerated,
-					Timestamp: now,
-					Data:      data,
+		// Connect client
+		err = session.Client.Connect()
+		if err != nil {
+			log.Printf("Failed to connect client for instance %s: %v", instanceID, err)
+
+			if service.Realtime != nil {
+				errorEvt := ws.WsEvent{
+					Event:     ws.EventInstanceError,
+					Timestamp: time.Now().UTC(),
+					Data: map[string]interface{}{
+						"instance_id": instanceID,
+						"error":       "Failed to connect: " + err.Error(),
+					},
 				}
+				service.Realtime.Publish(errorEvt)
+			}
+			return
+		}
 
-				service.Realtime.Publish(evtWs)
+		// Listen to QR events
+		for evt := range qrChan {
+			// Cek apakah context sudah dibatalkan atau timeout
+			select {
+			case <-ctx.Done():
+				println("\n✗ QR Generation cancelled or timeout for instance:", instanceID)
+
+				// Broadcast cancel/timeout event
+				if service.Realtime != nil {
+					cancelEvt := ws.WsEvent{
+						Event:     ws.EventQRTimeout,
+						Timestamp: time.Now().UTC(),
+						Data: map[string]interface{}{
+							"instance_id": instanceID,
+							"status":      "cancelled",
+							"reason":      ctx.Err().Error(),
+						},
+					}
+					service.Realtime.Publish(cancelEvt)
+				}
+				return
+
+			default:
+				// Lanjut handle events
 			}
 
-			return SuccessResponse(c, 200, "QR code generated", map[string]interface{}{
-				"qr":      evt.Code,
-				"status":  "qr_ready",
-				"message": "Scan with WhatsApp. Status will auto-update.",
-			})
-		} else if evt.Event == "success" {
-			println("\n✓ QR Scanned! Waiting for connection...")
+			if evt.Event == "code" {
+				// Print QR string untuk debugging
+				println("\n=== QR Code String ===")
+				println(evt.Code)
+				println("Instance ID:", instanceID)
 
-			return SuccessResponse(c, 200, "QR code scanned", map[string]interface{}{
-				"status":  "pairing",
-				"message": "QR scanned! Check /status endpoint for connection status",
-			})
+				// Simpan QR ke DB custom
+				expiresAt := time.Now().Add(60 * time.Second)
+				err := model.UpdateInstanceQR(instanceID, evt.Code, expiresAt)
+				if err != nil {
+					log.Printf("Failed to update QR info in database for instance %s: %v", instanceID, err)
+				}
+
+				// Broadcast QR via WebSocket
+				if service.Realtime != nil {
+					data := ws.QRGeneratedData{
+						InstanceID:  instanceID,
+						PhoneNumber: "",
+						QRData:      evt.Code,
+						ExpiresAt:   expiresAt,
+					}
+
+					evtWs := ws.WsEvent{
+						Event:     ws.EventQRGenerated,
+						Timestamp: time.Now().UTC(),
+						Data:      data,
+					}
+					service.Realtime.Publish(evtWs)
+				}
+
+				println("QR sent via WebSocket. Waiting for scan or next QR refresh...")
+
+			} else if evt.Event == "success" {
+				println("\n✓ QR Scanned! Pairing successful for instance:", instanceID)
+
+				// Broadcast success via WebSocket
+				if service.Realtime != nil {
+					successEvt := ws.WsEvent{
+						Event:     ws.EventQRSuccess,
+						Timestamp: time.Now().UTC(),
+						Data: map[string]interface{}{
+							"instance_id": instanceID,
+							"status":      "connected",
+						},
+					}
+					service.Realtime.Publish(successEvt)
+				}
+				return
+
+			} else if evt.Event == "timeout" {
+				println("\n✗ QR Timeout for instance:", instanceID)
+
+				if service.Realtime != nil {
+					timeoutEvt := ws.WsEvent{
+						Event:     ws.EventQRTimeout,
+						Timestamp: time.Now().UTC(),
+						Data: map[string]interface{}{
+							"instance_id": instanceID,
+							"status":      "timeout",
+						},
+					}
+					service.Realtime.Publish(timeoutEvt)
+				}
+				return
+
+			} else if strings.HasPrefix(evt.Event, "err-") {
+				println("\n✗ QR Error for instance:", instanceID, "->", evt.Event)
+
+				if service.Realtime != nil {
+					errorEvt := ws.WsEvent{
+						Event:     ws.EventInstanceError,
+						Timestamp: time.Now().UTC(),
+						Data: map[string]interface{}{
+							"instance_id": instanceID,
+							"error":       evt.Event,
+						},
+					}
+					service.Realtime.Publish(errorEvt)
+				}
+				return
+			}
 		}
+
+		// Channel closed unexpectedly
+		println("\n✗ QR channel closed for instance:", instanceID)
+
+		if service.Realtime != nil {
+			errorEvt := ws.WsEvent{
+				Event:     ws.EventInstanceError,
+				Timestamp: time.Now().UTC(),
+				Data: map[string]interface{}{
+					"instance_id": instanceID,
+					"error":       "QR channel closed unexpectedly",
+				},
+			}
+			service.Realtime.Publish(errorEvt)
+		}
+	}()
+
+	// Return response LANGSUNG tanpa menunggu QR generation selesai
+	return SuccessResponse(c, 200, "QR generation started", map[string]interface{}{
+		"status":      "generating",
+		"message":     "QR codes will be sent via WebSocket. Listen to QR_GENERATED event.",
+		"instance_id": instanceID,
+		"timeout":     "3 minutes",
+	})
+}
+
+// DELETE /qr/:instanceId - Cancel QR generation
+func CancelQR(c echo.Context) error {
+	instanceID := c.Param("instanceId")
+
+	qrCancelMutex.RLock()
+	cancel, exists := qrCancelFuncs[instanceID]
+	qrCancelMutex.RUnlock()
+
+	if !exists {
+		return ErrorResponse(c, 404, "No active QR generation", "NO_QR_SESSION", "No QR generation in progress for this instance.")
 	}
 
-	// Kalau keluar dari loop, QR dianggap expired
+	println("\n✗ User cancelled QR generation for instance:", instanceID)
+	// Cancel QR generation
+	cancel()
+
+	// Broadcast cancel event via WebSocket
 	if service.Realtime != nil {
-		now := time.Now().UTC()
-		data := ws.QRExpiredData{
-			InstanceID:  instanceID,
-			PhoneNumber: "", // kalau ada
+		cancelEvt := ws.WsEvent{
+			Event:     ws.EventQRCancelled,
+			Timestamp: time.Now().UTC(),
+			Data: map[string]interface{}{
+				"instance_id": instanceID,
+				"status":      "cancelled",
+				"message":     "User cancelled QR generation",
+			},
 		}
-		evtWs := ws.WsEvent{
-			Event:     ws.EventQRExpired,
-			Timestamp: now,
-			Data:      data,
-		}
-		service.Realtime.Publish(evtWs)
+		service.Realtime.Publish(cancelEvt)
 	}
-	return ErrorResponse(c, 400, "QR code expired", "QR_EXPIRED", "Please try again")
+
+	return SuccessResponse(c, 200, "QR generation cancelled successfully", map[string]interface{}{
+		"instance_id": instanceID,
+		"status":      "cancelled",
+	})
 }
 
 // GET /status/:instanceId
