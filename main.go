@@ -107,6 +107,7 @@ func main() {
 	e.GET("/status/:instanceId", handler.GetStatus)
 	e.POST("/logout/:instanceId", handler.Logout)
 	e.DELETE("/instances/:instanceId", handler.DeleteInstance)
+	e.DELETE("/qr-cancel/:instanceId", handler.CancelQR)
 
 	// ambil semua instance
 	e.GET("/instances", handler.GetAllInstances)

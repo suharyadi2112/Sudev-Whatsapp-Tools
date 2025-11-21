@@ -365,6 +365,10 @@ func GetInstanceByInstanceID(instanceID string) (*Instance, error) {
 		return nil, err
 	}
 
+	// Assign dari variabel Null* ke field struct
+	inst.QRCode = qrCodeNS           // ← tambahkan baris ini
+	inst.QRExpiresAt = qrExpiresAtNT // ← dan ini
+
 	return inst, nil
 }
 

@@ -8,6 +8,10 @@ const (
 	EventQRExpired             = "QR_EXPIRED"
 	EventInstanceStatusChanged = "INSTANCE_STATUS_CHANGED"
 	EventInstanceError         = "INSTANCE_ERROR"
+
+	EventQRSuccess   = "QR_SUCCESS" // Pairing berhasil
+	EventQRTimeout   = "QR_TIMEOUT"
+	EventQRCancelled = "QR_CANCELLED" // Tambahkan ini
 	// Kalau nanti mau dipakai:
 	// EventQRScanned = "QR_SCANNED"
 )
