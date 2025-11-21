@@ -149,7 +149,18 @@ func UpdateInstanceQR(instanceID, qr string, expiresAt time.Time) error {
 // Ambil semua instance dari database custom
 func GetAllInstances() ([]Instance, error) {
 	query := `
-        SELECT instance_id, phone_number, COALESCE(jid, ''), status, is_connected, COALESCE(name, ''), created_at
+        SELECT 
+            id,
+            instance_id,
+            phone_number,
+            jid,
+            status,
+            is_connected,
+            name,
+            created_at,
+            connected_at,
+            disconnected_at,
+            last_seen
         FROM instances
         ORDER BY created_at DESC
     `
@@ -162,15 +173,21 @@ func GetAllInstances() ([]Instance, error) {
 	var instances []Instance
 	for rows.Next() {
 		var inst Instance
-		err = rows.Scan(&inst.InstanceID,
+		err = rows.Scan(
+			&inst.ID,
+			&inst.InstanceID,
 			&inst.PhoneNumber,
 			&inst.JID,
 			&inst.Status,
 			&inst.IsConnected,
 			&inst.Name,
-			&inst.CreatedAt)
+			&inst.CreatedAt,
+			&inst.ConnectedAt,
+			&inst.DisconnectedAt,
+			&inst.LastSeen,
+		)
 		if err != nil {
-			continue // skip error
+			continue // skip error, bisa juga log.Println(err)
 		}
 		instances = append(instances, inst)
 	}

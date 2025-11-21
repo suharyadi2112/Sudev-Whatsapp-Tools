@@ -15,12 +15,61 @@ import (
 	"gowa-yourself/internal/service"
 	"gowa-yourself/internal/ws"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/labstack/echo/v4"
 )
 
 // Simpan cancel functions untuk setiap instance
 var qrCancelFuncs = make(map[string]context.CancelFunc)
 var qrCancelMutex sync.RWMutex
+var JwtKey = []byte("secret_key_rahasia") // lebih baik dari ENV
+
+type Claims struct {
+	Username string `json:"username"`
+	jwt.RegisteredClaims
+}
+
+//**********************************
+//
+//SECTION LOGIN USER JWT
+//
+//**********************************
+
+func GenerateJWT(username string) (string, error) {
+	exp := time.Now().Add(1 * time.Hour)
+	claims := Claims{
+		Username: username,
+		RegisteredClaims: jwt.RegisteredClaims{
+			ExpiresAt: jwt.NewNumericDate(exp),
+		},
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(JwtKey)
+}
+
+func LoginJWT(c echo.Context) error {
+	var creds struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+	}
+	if err := c.Bind(&creds); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "Bad request"})
+	}
+	if creds.Username != "sudevwa" || creds.Password != "5ud3vw4" {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "Invalid credentials"})
+	}
+	token, err := GenerateJWT(creds.Username)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "Error generating token"})
+	}
+	return c.JSON(http.StatusOK, map[string]string{"token": token})
+}
+
+//**********************************
+//
+//SECTION LOGIN WHATSAPP
+//
+//**********************************
 
 // Generate random instance ID
 func generateInstanceID() string {

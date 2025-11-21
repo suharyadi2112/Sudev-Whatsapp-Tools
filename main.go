@@ -2,6 +2,7 @@ package main
 
 import (
 	"log"
+	"net/http"
 	"os"
 	"time"
 
@@ -10,6 +11,7 @@ import (
 	"gowa-yourself/internal/helper"
 	"gowa-yourself/internal/service"
 
+	echojwt "github.com/labstack/echo-jwt/v4"
 	"github.com/labstack/echo/v4"
 	"github.com/labstack/echo/v4/middleware"
 	"golang.org/x/time/rate"
@@ -59,17 +61,6 @@ func main() {
 	e.Use(middleware.Logger())
 	e.Use(middleware.Recover())
 
-	// Rate limiter: 10 request per detik per IP
-	e.Use(middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
-		Store: middleware.NewRateLimiterMemoryStoreWithConfig(
-			middleware.RateLimiterMemoryStoreConfig{
-				Rate:      rate.Limit(10),  // 10 req / detik
-				Burst:     10,              // boleh burst sampai 10
-				ExpiresIn: 3 * time.Minute, // window penyimpanan per IP
-			},
-		),
-	}))
-
 	e.Use(middleware.CORSWithConfig(middleware.CORSConfig{
 		AllowOrigins: []string{"http://localhost:8080"}, // list asal ip dari request
 		AllowMethods: []string{
@@ -89,11 +80,23 @@ func main() {
 		},
 		AllowCredentials: true, // kalau pakai cookie / auth
 	}))
+	e.OPTIONS("/*", func(c echo.Context) error {
+		return c.NoContent(http.StatusOK)
+	})
 
+	// Rate limiter: 10 request per detik per IP
+	e.Use(middleware.RateLimiterWithConfig(middleware.RateLimiterConfig{
+		Store: middleware.NewRateLimiterMemoryStoreWithConfig(
+			middleware.RateLimiterMemoryStoreConfig{
+				Rate:      rate.Limit(10),  // 10 req / detik
+				Burst:     10,              // boleh burst sampai 10
+				ExpiresIn: 3 * time.Minute, // window penyimpanan per IP
+			},
+		),
+	}))
+	e.POST("/login-jwt", handler.LoginJWT)      // di luar group JWT
 	e.GET("/ws", handler.WebSocketHandler(hub)) //listen socket gorilla
-
-	// Health check
-	e.GET("/", func(c echo.Context) error {
+	e.GET("/", func(c echo.Context) error {     // Health check
 		return c.JSON(200, map[string]interface{}{
 			"success": true,
 			"message": "WhatsApp API is running",
@@ -101,40 +104,47 @@ func main() {
 		})
 	})
 
+	// Daftar group route yang butuh JWT
+
+	log.Printf("[JWT] Secret used main.go : %v", handler.JwtKey)
+	api := e.Group("/api", echojwt.WithConfig(echojwt.Config{
+		SigningKey: handler.JwtKey,
+	}))
+
 	// Routes
-	e.POST("/login", handler.Login)
-	e.GET("/qr/:instanceId", handler.GetQR)
-	e.GET("/status/:instanceId", handler.GetStatus)
-	e.POST("/logout/:instanceId", handler.Logout)
-	e.DELETE("/instances/:instanceId", handler.DeleteInstance)
-	e.DELETE("/qr-cancel/:instanceId", handler.CancelQR)
+	api.POST("/login", handler.Login)
+	api.GET("/qr/:instanceId", handler.GetQR)
+	api.GET("/status/:instanceId", handler.GetStatus)
+	api.POST("/logout/:instanceId", handler.Logout)
+	api.DELETE("/instances/:instanceId", handler.DeleteInstance)
+	api.DELETE("/qr-cancel/:instanceId", handler.CancelQR)
 
 	// ambil semua instance
-	e.GET("/instances", handler.GetAllInstances)
+	api.GET("/instances", handler.GetAllInstances)
 
 	// Message routes by instance id
-	e.POST("/send/:instanceId", handler.SendMessage)
-	e.POST("/check/:instanceId", handler.CheckNumber)
+	api.POST("/send/:instanceId", handler.SendMessage)
+	api.POST("/check/:instanceId", handler.CheckNumber)
 	// Media routes by instance id
-	e.POST("/send/:instanceId/media", handler.SendMediaFile)
-	e.POST("/send/:instanceId/media-url", handler.SendMediaURL)
+	api.POST("/send/:instanceId/media", handler.SendMediaFile)
+	api.POST("/send/:instanceId/media-url", handler.SendMediaURL)
 
 	//Message by nohp
-	e.POST("/by-number/:phoneNumber", handler.SendMessageByNumber)
-	e.POST("/by-number/:phoneNumber/media-url", handler.SendMediaURLByNumber)
-	e.POST("/by-number/:phoneNumber/media-file", handler.SendMediaFileByNumber)
+	api.POST("/by-number/:phoneNumber", handler.SendMessageByNumber)
+	api.POST("/by-number/:phoneNumber/media-url", handler.SendMediaURLByNumber)
+	api.POST("/by-number/:phoneNumber/media-file", handler.SendMediaFileByNumber)
 
 	// Group routes
-	e.GET("/groups/:instanceId", handler.GetGroups)
-	e.POST("/send-group/:instanceId", handler.SendGroupMessage)
-	e.POST("/send-group/:instanceId/media", handler.SendGroupMedia)
-	e.POST("/send-group/:instanceId/media-url", handler.SendGroupMediaURL)
+	api.GET("/groups/:instanceId", handler.GetGroups)
+	api.POST("/send-group/:instanceId", handler.SendGroupMessage)
+	api.POST("/send-group/:instanceId/media", handler.SendGroupMedia)
+	api.POST("/send-group/:instanceId/media-url", handler.SendGroupMediaURL)
 
 	//Group by no hp
-	e.GET("/groups/by-number/:phoneNumber", handler.GetGroupsByNumber)
-	e.POST("/send-group/by-number/:phoneNumber", handler.SendGroupMessageByNumber)
-	e.POST("/send-group/by-number/:phoneNumber/media", handler.SendGroupMediaByNumber)
-	e.POST("/send-group/by-number/:phoneNumber/media-url", handler.SendGroupMediaURLByNumber)
+	api.GET("/groups/by-number/:phoneNumber", handler.GetGroupsByNumber)
+	api.POST("/send-group/by-number/:phoneNumber", handler.SendGroupMessageByNumber)
+	api.POST("/send-group/by-number/:phoneNumber/media", handler.SendGroupMediaByNumber)
+	api.POST("/send-group/by-number/:phoneNumber/media-url", handler.SendGroupMediaURLByNumber)
 
 	// Start server
 	port := os.Getenv("PORT")
