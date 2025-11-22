@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -105,11 +106,44 @@ func main() {
 	})
 
 	// Daftar group route yang butuh JWT
-
-	log.Printf("[JWT] Secret used main.go : %v", handler.JwtKey)
 	api := e.Group("/api", echojwt.WithConfig(echojwt.Config{
 		SigningKey: handler.JwtKey,
+		ErrorHandler: func(c echo.Context, err error) error {
+			// Custom response untuk JWT authentication error
+			return c.JSON(http.StatusUnauthorized, map[string]interface{}{
+				"success": false,
+				"error":   "Authentication required",
+				"message": "Please provide a valid Bearer token in the Authorization header",
+			})
+		},
 	}))
+	api.GET("/validate", handler.ValidateToken)
+
+	e.HTTPErrorHandler = func(err error, c echo.Context) {
+		code := http.StatusInternalServerError
+		message := "Internal Server Error"
+
+		if he, ok := err.(*echo.HTTPError); ok {
+			code = he.Code
+			message = fmt.Sprintf("%v", he.Message)
+		}
+		// Custom response format
+		response := map[string]interface{}{
+			"success": false,
+			"error":   message,
+		}
+		// Custom message untuk error tertentu
+		switch code {
+		case http.StatusUnauthorized:
+			response["message"] = "Authentication required. Please login first."
+		case http.StatusMethodNotAllowed:
+			response["message"] = "Method not allowed for this endpoint"
+		case http.StatusNotFound:
+			response["message"] = "Endpoint not found"
+		}
+
+		c.JSON(code, response)
+	}
 
 	// Routes
 	api.POST("/login", handler.Login)

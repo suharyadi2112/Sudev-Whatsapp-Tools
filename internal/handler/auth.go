@@ -65,6 +65,21 @@ func LoginJWT(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"token": token})
 }
 
+func ValidateToken(c echo.Context) error {
+	// JWT middleware sudah validasi token sebelum sampai sini
+	// Jika sampai ke handler ini berarti token valid
+	// Optional: Ambil username dari token claims
+	user := c.Get("user").(*jwt.Token)
+	claims := user.Claims.(jwt.MapClaims)
+	username := claims["username"].(string)
+
+	return c.JSON(http.StatusOK, map[string]interface{}{
+		"success":  true,
+		"message":  "Token is valid",
+		"username": username,
+	})
+}
+
 //**********************************
 //
 //SECTION LOGIN WHATSAPP
@@ -421,15 +436,20 @@ func GetAllInstances(c echo.Context) error {
 
 	// Ambil semua session memory (active sessions)
 	sessions := service.GetAllSessions()
-
 	var instances []model.InstanceResp
 
 	for _, inst := range dbInstances {
+		log.Printf("🔍 Processing instance: %s", inst.InstanceID)
+
 		// Convert dari model.Instance ke model.InstanceResp (string primitif)
 		resp := model.ToResponse(inst)
 
+		log.Printf("  - After ToResponse: Status=%s, IsConnected=%v", resp.Status, resp.IsConnected)
+
 		// Cek apakah ada session aktif untuk instance ini
 		session, found := sessions[inst.InstanceID]
+
+		log.Printf("  - Session found in memory: %v", found)
 
 		if found {
 			resp.IsConnected = session.IsConnected
@@ -438,17 +458,27 @@ func GetAllInstances(c echo.Context) error {
 			if resp.IsConnected {
 				resp.Status = "online"
 			}
+
+			log.Printf("  - Updated: IsConnected=%v, Status=%s", resp.IsConnected, resp.Status)
 		}
+
 		// Tambahkan info apakah session ada di Whatsmeow memory
 		resp.ExistsInWhatsmeow = found
 
-		// Kalau tidak show all, dan instance offline, skip
+		log.Printf("  - showAll=%v, IsConnected=%v", showAll, resp.IsConnected)
+
+		// ✅ INI YANG SUSPECT - Filter logic
 		if !showAll && !resp.IsConnected {
+			log.Printf("  ⚠️ SKIPPED (not showAll and not connected)")
 			continue
 		}
 
+		log.Printf("  ✅ ADDED to result")
+
 		instances = append(instances, resp)
 	}
+
+	log.Printf("📊 Final result: %d instances", len(instances))
 
 	return c.JSON(http.StatusOK, map[string]interface{}{
 		"success": true,

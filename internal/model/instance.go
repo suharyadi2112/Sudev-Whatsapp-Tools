@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"gowa-yourself/database"
+	"log"
 	"time"
 )
 
@@ -13,7 +14,7 @@ type Instance struct {
 	ID              int64
 	InstanceID      string
 	PhoneNumber     sql.NullString
-	JID             string
+	JID             sql.NullString
 	Status          string
 	IsConnected     bool
 	Name            sql.NullString
@@ -157,13 +158,22 @@ func GetAllInstances() ([]Instance, error) {
             status,
             is_connected,
             name,
+            profile_picture,
+            about,
+            platform,
+            battery_level,
+            battery_charging,
+            qr_code,
+            qr_expires_at,
             created_at,
             connected_at,
             disconnected_at,
-            last_seen
+            last_seen,
+            session_data
         FROM instances
         ORDER BY created_at DESC
     `
+
 	rows, err := database.AppDB.Query(query)
 	if err != nil {
 		return nil, err
@@ -173,6 +183,7 @@ func GetAllInstances() ([]Instance, error) {
 	var instances []Instance
 	for rows.Next() {
 		var inst Instance
+
 		err = rows.Scan(
 			&inst.ID,
 			&inst.InstanceID,
@@ -181,14 +192,25 @@ func GetAllInstances() ([]Instance, error) {
 			&inst.Status,
 			&inst.IsConnected,
 			&inst.Name,
+			&inst.ProfilePicture,
+			&inst.About,
+			&inst.Platform,
+			&inst.BatteryLevel,
+			&inst.BatteryCharging,
+			&inst.QRCode,
+			&inst.QRExpiresAt,
 			&inst.CreatedAt,
 			&inst.ConnectedAt,
 			&inst.DisconnectedAt,
 			&inst.LastSeen,
+			&inst.SessionData,
 		)
+
 		if err != nil {
-			continue // skip error, bisa juga log.Println(err)
+			log.Println("Scan error GetAllInstances():", err)
+			continue
 		}
+
 		instances = append(instances, inst)
 	}
 
@@ -399,7 +421,7 @@ func ToResponse(inst Instance) InstanceResp {
 	resp := InstanceResp{
 		ID:              inst.ID,
 		InstanceID:      inst.InstanceID,
-		JID:             inst.JID,
+		JID:             inst.JID.String,
 		Status:          inst.Status,
 		IsConnected:     inst.IsConnected,
 		BatteryLevel:    0,
