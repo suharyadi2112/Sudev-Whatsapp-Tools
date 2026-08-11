@@ -116,6 +116,8 @@ func (req *OutboxRequest) ToModel() model.Outbox {
 	}
 	if req.SendingDateTime != nil {
 		m.SendingDateTime = sql.NullTime{Time: *req.SendingDateTime, Valid: true}
+	} else {
+		m.SendingDateTime = sql.NullTime{Time: time.Now(), Valid: true}
 	}
 	if req.TableID != "" {
 		m.TableID = sql.NullString{String: req.TableID, Valid: true}
