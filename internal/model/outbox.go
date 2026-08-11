@@ -62,6 +62,10 @@ func CreateOutboxBatch(ctx context.Context, records []Outbox) error {
 	defer stmt.Close()
 
 	for _, r := range records {
+		sendingTime := r.SendingDateTime
+		if !sendingTime.Valid {
+			sendingTime = sql.NullTime{Time: time.Now(), Valid: true}
+		}
 		_, err := stmt.ExecContext(
 			ctx,
 			r.Type,
@@ -72,7 +76,7 @@ func CreateOutboxBatch(ctx context.Context, records []Outbox) error {
 			r.Status,
 			r.Priority,
 			r.Application,
-			r.SendingDateTime,
+			sendingTime,
 			r.TableID,
 			r.File,
 		)
@@ -86,6 +90,9 @@ func CreateOutboxBatch(ctx context.Context, records []Outbox) error {
 
 // CreateOutboxSingle inserts a single outbox record and returns the inserted ID
 func CreateOutboxSingle(ctx context.Context, r *Outbox) error {
+	if !r.SendingDateTime.Valid {
+		r.SendingDateTime = sql.NullTime{Time: time.Now(), Valid: true}
+	}
 	if database.OutboxDriver == "mysql" {
 		query := `
 			INSERT INTO outbox (
